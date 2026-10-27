@@ -92,3 +92,7 @@ restore_ctx:
 enter_first:
     csrw 0x340, a0               # mscratch ← ctx0(a0 由 C 传入)
     j restore_ctx
+
+    .globl halt_stub
+halt_stub:                       # SYS_HALT:内核把 mepc 指到这,M 模式执行 ecall 停机
+    ecall

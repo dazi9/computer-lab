@@ -1,11 +1,13 @@
-/* kern.c —— v3:邮箱消息传递(生产者/消费者)+ 睡眠队列 + idle 任务
+/* kern.c —— v5 微操作系统:M/U 两级特权 + ecall 系统调用表
  *
- * task_a 生产者:每 5 片投一个时钟 tick 进邮箱('+')
- * task_b 消费者:阻塞收消息,回显 <N>,并让 framebuffer 小球走一步
- *
- * 通信原语 kern_send/kern_recv:单槽邮箱;收不到/发不出就"睡到被对方唤醒"
- * (wake_at = NEVER,不自醒),投递/取走的一方直接把对方置回 RUN 并立刻让出。
- * 消息不丢、不重、有序——由 tests/kern_smoke.py 的严格递增断言把关。
+ * 内核(trap_entry/调度器/邮箱)在 M 模式;任务经 enter_first 的 mret 降入
+ * U 模式。U 模式下:CSR/wfi/mret 全部 → trap(mcause=2),ecall → trap
+ * (mcause=8)进系统调用表:
+ *   0 halt  1 putc  2 putdec  3 sleep  4 send  5 recv  6 gettime
+ * 阻塞式 send/recv 在内核态完成:邮箱满/空就把任务标记 SLEEPING
+ * (mepc 不推进,醒来重试同一条 ecall),对方投递/取走时置回 RUN。
+ * SYS_HALT:内核把 ctx 的 mepc 指到 halt_stub 且 mstatus.MPP=M,mret 后在
+ * M 模式执行 ecall → 全机停机。
  */
 volatile unsigned char * const UART = (volatile unsigned char *)0x10000000u;
 
@@ -30,7 +32,6 @@ struct ctx {
     unsigned mstatus;
 };
 
-/* 每个 slot 1KB:ctx 放 +768,头部留给 trap_handler_c 的 C 栈帧 */
 static unsigned char slots[NTASKS][1024] __attribute__((aligned(16)));
 static unsigned char stk_a[1024] __attribute__((aligned(16)));
 static unsigned char stk_b[1024] __attribute__((aligned(16)));
@@ -64,165 +65,200 @@ static void rearm(void)
     set_mtimecmp(now() + SLICE);
 }
 
-void kern_sleep(unsigned ticks)
+/* ---- 用户态系统调用封装(任务只能走这条路) ---- */
+#define SYS_HALT 0
+#define SYS_PUTC 1
+#define SYS_PUTDEC 2
+#define SYS_SLEEP 3
+#define SYS_SEND 4
+#define SYS_RECV 5
+#define SYS_GETTIME 6
+
+static long syscall2(long n, long a)
 {
-    int id = g_cur;
-    __asm__ volatile ("csrci 0x300, 8");       /* MIE←0:状态更新要原子 */
-    wake_at[id] = now() + ticks;
-    state[id] = SLEEPING;
-    __asm__ volatile ("csrsi 0x300, 8");
-    set_mtimecmp(now());                       /* 立刻让出 CPU */
+    register long a0 asm("a0") = a;
+    register long a7 asm("a7") = n;
+    __asm__ volatile ("ecall" : "+r"(a0) : "r"(a7) : "memory");
+    return a0;
 }
 
-static void block_me(void)                     /* 睡到对方唤醒(NEVER 不自醒) */
+static void sys_putc(char c)
 {
-    int id = g_cur;
-    __asm__ volatile ("csrci 0x300, 8");
-    wake_at[id] = NEVER;
-    state[id] = SLEEPING;
-    __asm__ volatile ("csrsi 0x300, 8");
-    set_mtimecmp(now());
+    syscall2(SYS_PUTC, c);
 }
 
-static void wake_peer_if_ipc_blocked(void)     /* 只唤醒因 IPC 阻塞的对方,
-                                                  别把睡定时器的误唤醒 */
+static void sys_putdec(unsigned v)
 {
-    int peer = 1 - g_cur;
-    __asm__ volatile ("csrci 0x300, 8");
-    if (state[peer] == SLEEPING && wake_at[peer] == NEVER) {
-        state[peer] = RUN;
-        __asm__ volatile ("csrsi 0x300, 8");
-        set_mtimecmp(now());                   /* 真唤醒才让出 */
-        return;
-    }
-    __asm__ volatile ("csrsi 0x300, 8");
+    syscall2(SYS_PUTDEC, v);
 }
 
-/* ---- 环形缓冲邮箱 ---- */
+static void sys_sleep(unsigned ticks)
+{
+    syscall2(SYS_SLEEP, ticks);
+}
+
+static void sys_send(unsigned v)
+{
+    syscall2(SYS_SEND, v);
+}
+
+static unsigned sys_recv(void)
+{
+    return (unsigned)syscall2(SYS_RECV, 0);
+}
+
+/* ---- 环形缓冲邮箱(仅内核态可碰) ---- */
 #define MAIL_CAP 8
 static unsigned mail_buf[MAIL_CAP];
 static volatile unsigned mail_head, mail_tail, mail_count;
 
-void kern_send(unsigned v)
+extern void halt_stub(void);
+
+/* ---- 系统调用表(mcause=8 时由 trap_handler_c 调用;内核态,天然原子) ----
+ * 返回 NULL = 正常调度流程;返回 ctx = 立刻调度该 ctx(用于 SYS_HALT)。 */
+static struct ctx *handle_syscall(struct ctx *c, int id)
 {
-    for (;;) {
-        __asm__ volatile ("csrci 0x300, 8");
+    unsigned n = c->r[16];                     /* a7 = x17 → r[16] */
+    unsigned a0 = c->r[9];                     /* a0 = x10 → r[9] */
+    int peer = 1 - id;
+
+    if (n == 1) {                              /* putc */
+        uart_putc((char)a0);
+        c->r[9] = 0;
+        c->mepc += 4;
+    } else if (n == 2) {                       /* putdec */
+        unsigned v = a0;
+        char buf[11];
+        int i = 0;
+        if (v == 0)
+            uart_putc('0');
+        while (v) {
+            buf[i++] = (char)('0' + v % 10);
+            v /= 10;
+        }
+        while (i)
+            uart_putc(buf[--i]);
+        c->r[9] = 0;
+        c->mepc += 4;
+    } else if (n == 3) {                       /* sleep(ticks) */
+        wake_at[id] = now() + a0;
+        state[id] = SLEEPING;
+        c->mepc += 4;                          /* 醒来后从 ecall 下一条继续 */
+    } else if (n == 4) {                       /* send:满则睡到对方取走 */
         if (mail_count < MAIL_CAP) {
-            mail_buf[mail_tail] = v;
+            mail_buf[mail_tail] = a0;
             mail_tail = (mail_tail + 1) % MAIL_CAP;
             mail_count++;
-            __asm__ volatile ("csrsi 0x300, 8");
-            wake_peer_if_ipc_blocked();
-            return;
+            c->r[9] = 0;
+            c->mepc += 4;
+            if (state[peer] == SLEEPING && wake_at[peer] == NEVER)
+                state[peer] = RUN;             /* 唤醒等信的人 */
+        } else {
+            state[id] = SLEEPING;
+            wake_at[id] = NEVER;               /* 醒来重试同一条 ecall */
         }
-        __asm__ volatile ("csrsi 0x300, 8");
-        block_me();                            /* 满:睡到消费者取走 */
-    }
-}
-
-unsigned kern_recv(void)
-{
-    for (;;) {
-        __asm__ volatile ("csrci 0x300, 8");
+    } else if (n == 5) {                       /* recv:空则睡到对方投递 */
         if (mail_count) {
-            unsigned v = mail_buf[mail_head];
+            c->r[9] = mail_buf[mail_head];
             mail_head = (mail_head + 1) % MAIL_CAP;
             mail_count--;
-            __asm__ volatile ("csrsi 0x300, 8");
-            wake_peer_if_ipc_blocked();
-            return v;
+            c->mepc += 4;
+            if (state[peer] == SLEEPING && wake_at[peer] == NEVER)
+                state[peer] = RUN;
+        } else {
+            state[id] = SLEEPING;
+            wake_at[id] = NEVER;
         }
-        __asm__ volatile ("csrsi 0x300, 8");
-        block_me();                            /* 空:睡到生产者投递 */
+    } else if (n == 6) {                       /* gettime */
+        c->r[9] = (unsigned)now();
+        c->mepc += 4;
+    } else if (n == 0) {                       /* halt:M 模式 ecall 停全机 */
+        uart_putc('\n');
+        c->mepc = (unsigned) &halt_stub;
+        c->mstatus = (c->mstatus & ~0x188) | 0x1800 | 0x80;   /* MPP=M, MPIE=1 */
+        state[id] = RUN;
+        g_cur = id;
+        return c;                              /* 立刻调度它 → mret → M 模式 ecall */
+    } else {
+        c->r[9] = 0xFFFFFFFF;                  /* 未知调用 */
+        c->mepc += 4;
     }
+    return 0;
 }
 
-static void uart_putdec(unsigned v)
-{
-    char buf[11];
-    int i = 0;
-    if (v == 0) {
-        uart_putc('0');
-        return;
-    }
-    while (v) {
-        buf[i++] = (char)('0' + v % 10);
-        v /= 10;
-    }
-    while (i)
-        uart_putc(buf[--i]);
-}
+/* ---- XOR 画/擦 8x6 精灵(任务直写 framebuffer,尚无 PMP 隔离) ---- */
+static int bx = 8, by = 4, bdx = 1, bdy = 1;
 
-/* XOR 画/擦 8x6 精灵 */
-static void draw_sprite(volatile unsigned char *FB, int x, int y, int erase)
+static void draw_sprite(volatile unsigned char *FB)
 {
     static const unsigned char sprite[6] = {0x3C, 0x7E, 0xFF, 0xFF, 0x7E, 0x3C};
     int r;
-    (void)erase;                               /* XOR 本身就是画/擦一体 */
     for (r = 0; r < 6; r++) {
-        volatile unsigned char *p = FB + (unsigned)(y + r) * 8
-                                   + (unsigned)x / 8;
-        unsigned shift = (unsigned)x % 8;
+        volatile unsigned char *p = FB + (unsigned)(by + r) * 8
+                                   + (unsigned)bx / 8;
+        unsigned shift = (unsigned)bx % 8;
         *p ^= (unsigned char)(sprite[r] >> shift);
         if (shift)
             p[1] ^= (unsigned char)(sprite[r] << (8 - shift));
     }
 }
 
-static void task_a(void)                       /* 生产者:时钟,3 连发后睡 6 片 */
+static void poll_keys(void)                    /* 键盘:轮询输入设备(U 可直读) */
+{
+    volatile unsigned * const IN_READY = (volatile unsigned *)0x10000004u;
+    volatile unsigned * const IN_DATA = (volatile unsigned *)0x10000008u;
+    while (*IN_READY) {
+        unsigned k = *IN_DATA & 0xFF;
+        if (k == 'a') bdx = -1;
+        else if (k == 'd') bdx = 1;
+        else if (k == 'w') bdy = -1;
+        else if (k == 's') bdy = 1;
+        sys_putc((char)k);                     /* 回显:证明键盘真的进来了 */
+    }
+}
+
+static void task_a(void)                       /* 生产者(U 模式):3 连发后睡 6 片 */
 {
     unsigned tick = 0;
     for (;;) {
         int burst;
         for (burst = 0; burst < 3; burst++) {
-            uart_putc('+');
-            kern_send(tick++);
+            sys_putc('+');
+            sys_send(tick++);
         }
-        kern_sleep(6 * SLICE);
+        sys_sleep(6 * SLICE);
     }
 }
 
-static void task_b(void)                       /* 消费者:收消息 → 回显 + 小球 */
+static void task_b(void)                       /* 消费者(U 模式):收消息 → 回显 + 小球 */
 {
     volatile unsigned char * const FB = (volatile unsigned char *)0x10001000u;
-    volatile unsigned * const IN_READY = (volatile unsigned *)0x10000004u;
-    volatile unsigned * const IN_DATA = (volatile unsigned *)0x10000008u;
-    static int x = 8, y = 4, dx = 1, dy = 1;
-    draw_sprite(FB, x, y, 0);                  /* 初始画一颗,常驻可见 */
+    draw_sprite(FB);                           /* 初始画一颗,常驻可见 */
     for (;;) {
-        while (*IN_READY) {                    /* 键盘:轮询输入设备(WASD 转向) */
-            unsigned k = *IN_DATA & 0xFF;
-            if (k == 'a') dx = -1;
-            else if (k == 'd') dx = 1;
-            else if (k == 'w') dy = -1;
-            else if (k == 's') dy = 1;
-            uart_putc((char)k);                /* 回显到串口:证明键盘真的进来了 */
-        }
-        {
-            unsigned v = kern_recv();
-            draw_sprite(FB, x, y, 1);          /* 擦旧 */
-            if (x == 0) dx = 1;
-            if (x == 56) dx = -1;
-            if (y == 0) dy = 1;
-            if (y == 26) dy = -1;
-            x += dx;
-            y += dy;
-            if (x < 0) x = 0;                  /* 手动转向可能越界,夹回来 */
-            if (x > 56) x = 56;
-            if (y < 0) y = 0;
-            if (y > 26) y = 26;
-            draw_sprite(FB, x, y, 0);          /* 画新 */
-            uart_putc('<');
-            uart_putdec(v);
-            uart_putc('>');
-        }
+        unsigned v = sys_recv();
+        poll_keys();
+        draw_sprite(FB);                       /* XOR:擦旧 */
+        if (bx == 0) bdx = 1;
+        if (bx == 56) bdx = -1;
+        if (by == 0) bdy = 1;
+        if (by == 26) bdy = -1;
+        bx += bdx;
+        by += bdy;
+        if (bx < 0) bx = 0;                    /* 手动转向可能越界,夹回来 */
+        if (bx > 56) bx = 56;
+        if (by < 0) by = 0;
+        if (by > 26) by = 26;
+        draw_sprite(FB);                       /* 画新 */
+        sys_putc('<');
+        sys_putdec(v);
+        sys_putc('>');
     }
 }
 
-static void idle_task(void)
+static void idle_task(void)                    /* M 模式:wfi 打盹到最近闹钟 */
 {
     for (;;)
-        __asm__ volatile ("wfi");              /* 全体睡着:打盹到最近闹钟 */
+        __asm__ volatile ("wfi");
 }
 
 static void init_ctx(struct ctx *c, void (*fn)(void), unsigned char *top)
@@ -232,22 +268,57 @@ static void init_ctx(struct ctx *c, void (*fn)(void), unsigned char *top)
         c->r[i] = 0;
     c->r[1] = (unsigned)top;                   /* r[1] = x2 = sp */
     c->mepc = (unsigned)fn;
-    c->mstatus = 0x80;
+    c->mstatus = 0x80;                         /* MPIE=1,MPP=U(00)→mret 降入 U */
+}
+
+static int task_id_of(unsigned *old)
+{
+    return (old == (unsigned *)(void *)ctxp[1]) ? 1 : 0;
+}
+
+static void wake_due_tasks(void)               /* 把睡够时间的任务置回 RUN */
+{
+    int i;
+    unsigned long long t = now();
+    for (i = 0; i < NTASKS; i++)
+        if (state[i] == SLEEPING && t >= wake_at[i])
+            state[i] = RUN;
 }
 
 unsigned *trap_handler_c(unsigned *old)
 {
+    struct ctx *c = (struct ctx *)old;
+    int id = task_id_of(old);
     int i, nxt;
     unsigned long long t, w;
     int all_asleep = 1;
-    (void)old;
-    t = now();
-    for (i = 0; i < NTASKS; i++) {             /* 唤醒到点的 */
-        if (state[i] == SLEEPING && t >= wake_at[i])
-            state[i] = RUN;
+
+    if (c->mcause == 8) {                      /* U 模式 ecall:系统调用 */
+        struct ctx *haltctx = handle_syscall(c, id);
+        wake_due_tasks();
+        if (haltctx)
+            return (unsigned *)(void *)haltctx;
+        if (state[id] == RUN)
+            return old;                        /* 系统调用不是抢占点,同任务继续 */
+    } else if (c->mcause == 2) {               /* U 模式非法指令:跳过并标记 */
+        c->mepc += 4;
+        uart_putc('!');
+        wake_due_tasks();
+        if (state[id] == RUN)
+            return old;
+    } else if ((c->mcause & 0x80000000) == 0) {/* 其他同步异常:跳过并标记 */
+        c->mepc += 4;
+        uart_putc('?');
+        wake_due_tasks();
+        if (state[id] == RUN)
+            return old;
+    }
+
+    /* 到这里 = 定时器抢占 或 当前任务已阻塞:唤醒到点的 + 完整调度 */
+    wake_due_tasks();                          /* 定时器路径也要唤醒(重构教训!) */
+    for (i = 0; i < NTASKS; i++)
         if (state[i] == RUN)
             all_asleep = 0;
-    }
     if (all_asleep) {                          /* 全睡着:idle 到最近闹钟 */
         w = ~0ULL;
         for (i = 0; i < NTASKS; i++)
@@ -280,8 +351,9 @@ int cmain(void)
     init_ctx(ctxp[0], task_a, stk_a + sizeof stk_a);
     init_ctx(ctxp[1], task_b, stk_b + sizeof stk_b);
     init_ctx(&idle_ctx, idle_task, stk_idle + sizeof stk_idle);
+    idle_ctx.mstatus |= 0x1800;                /* idle 留在 M 模式(U 的 wfi 非法) */
     rearm();
-    uart_putc('|');
-    enter_first((unsigned *)ctxp[0]);
+    uart_putc('|');                            /* 内核就绪标记 */
+    enter_first((unsigned *)ctxp[0]);          /* a0 = ctx0,一去不回 */
     return 0;
 }
