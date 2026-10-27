@@ -78,10 +78,36 @@ static void task_a(void)
 
 static void task_b(void)
 {
+    /* 图形任务:在 framebuffer 上 XOR 弹跳小球,与打字任务分时共享 CPU */
+    volatile unsigned char * const FB = (volatile unsigned char *)0x10001000u;
+    static const unsigned char sprite[6] = {0x3C, 0x7E, 0xFF, 0xFF, 0x7E, 0x3C};
+    int x = 8, y = 4, dx = 1, dy = 1;
     for (;;) {
-        uart_putc('B');
-        for (volatile int d = 0; d < 1500; d++)
+        for (int r = 0; r < 6; r++) {                    /* XOR 画 */
+            volatile unsigned char *p = FB + (unsigned)(y + r) * 8
+                                       + (unsigned)x / 8;
+            unsigned shift = (unsigned)x % 8;
+            *p ^= (unsigned char)(sprite[r] >> shift);
+            if (shift)
+                p[1] ^= (unsigned char)(sprite[r] << (8 - shift));
+        }
+        for (volatile int d = 0; d < 800; d++)
             ;
+        for (int r = 0; r < 6; r++) {                    /* XOR 擦 */
+            volatile unsigned char *p = FB + (unsigned)(y + r) * 8
+                                       + (unsigned)x / 8;
+            unsigned shift = (unsigned)x % 8;
+            *p ^= (unsigned char)(sprite[r] >> shift);
+            if (shift)
+                p[1] ^= (unsigned char)(sprite[r] << (8 - shift));
+        }
+        if (x == 0) dx = 1;
+        if (x == 56) dx = -1;
+        if (y == 0) dy = 1;
+        if (y == 26) dy = -1;
+        x += dx;
+        y += dy;
+        uart_putc('B');
     }
 }
 
