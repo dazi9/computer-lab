@@ -84,28 +84,35 @@ static void block_me(void)                     /* 睡到对方唤醒(NEVER 不�
     set_mtimecmp(now());
 }
 
-static void wake_peer(void)                    /* 把对方置回 RUN 并立刻让出 */
+static void wake_peer_if_ipc_blocked(void)     /* 只唤醒因 IPC 阻塞的对方,
+                                                  别把睡定时器的误唤醒 */
 {
     int peer = 1 - g_cur;
     __asm__ volatile ("csrci 0x300, 8");
-    state[peer] = RUN;
+    if (state[peer] == SLEEPING && wake_at[peer] == NEVER) {
+        state[peer] = RUN;
+        __asm__ volatile ("csrsi 0x300, 8");
+        set_mtimecmp(now());                   /* 真唤醒才让出 */
+        return;
+    }
     __asm__ volatile ("csrsi 0x300, 8");
-    set_mtimecmp(now());
 }
 
-/* ---- 单槽邮箱 ---- */
-static volatile int mail_full = 0;
-static volatile unsigned mail_val;
+/* ---- 环形缓冲邮箱 ---- */
+#define MAIL_CAP 8
+static unsigned mail_buf[MAIL_CAP];
+static volatile unsigned mail_head, mail_tail, mail_count;
 
 void kern_send(unsigned v)
 {
     for (;;) {
         __asm__ volatile ("csrci 0x300, 8");
-        if (!mail_full) {
-            mail_val = v;
-            mail_full = 1;
+        if (mail_count < MAIL_CAP) {
+            mail_buf[mail_tail] = v;
+            mail_tail = (mail_tail + 1) % MAIL_CAP;
+            mail_count++;
             __asm__ volatile ("csrsi 0x300, 8");
-            wake_peer();
+            wake_peer_if_ipc_blocked();
             return;
         }
         __asm__ volatile ("csrsi 0x300, 8");
@@ -117,11 +124,12 @@ unsigned kern_recv(void)
 {
     for (;;) {
         __asm__ volatile ("csrci 0x300, 8");
-        if (mail_full) {
-            unsigned v = mail_val;
-            mail_full = 0;
+        if (mail_count) {
+            unsigned v = mail_buf[mail_head];
+            mail_head = (mail_head + 1) % MAIL_CAP;
+            mail_count--;
             __asm__ volatile ("csrsi 0x300, 8");
-            wake_peer();
+            wake_peer_if_ipc_blocked();
             return v;
         }
         __asm__ volatile ("csrsi 0x300, 8");
@@ -161,13 +169,16 @@ static void draw_sprite(volatile unsigned char *FB, int x, int y, int erase)
     }
 }
 
-static void task_a(void)                       /* 生产者:时钟 */
+static void task_a(void)                       /* 生产者:时钟,3 连发后睡 6 片 */
 {
     unsigned tick = 0;
     for (;;) {
-        uart_putc('+');
-        kern_send(tick++);
-        kern_sleep(5 * SLICE);
+        int burst;
+        for (burst = 0; burst < 3; burst++) {
+            uart_putc('+');
+            kern_send(tick++);
+        }
+        kern_sleep(6 * SLICE);
     }
 }
 
