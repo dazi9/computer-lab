@@ -185,21 +185,37 @@ static void task_a(void)                       /* 生产者:时钟,3 连发后�
 static void task_b(void)                       /* 消费者:收消息 → 回显 + 小球 */
 {
     volatile unsigned char * const FB = (volatile unsigned char *)0x10001000u;
-    int x = 8, y = 4, dx = 1, dy = 1;
+    volatile unsigned * const IN_READY = (volatile unsigned *)0x10000004u;
+    volatile unsigned * const IN_DATA = (volatile unsigned *)0x10000008u;
+    static int x = 8, y = 4, dx = 1, dy = 1;
     draw_sprite(FB, x, y, 0);                  /* 初始画一颗,常驻可见 */
     for (;;) {
-        unsigned v = kern_recv();
-        draw_sprite(FB, x, y, 1);              /* 擦旧 */
-        if (x == 0) dx = 1;
-        if (x == 56) dx = -1;
-        if (y == 0) dy = 1;
-        if (y == 26) dy = -1;
-        x += dx;
-        y += dy;
-        draw_sprite(FB, x, y, 0);              /* 画新 */
-        uart_putc('<');
-        uart_putdec(v);
-        uart_putc('>');
+        while (*IN_READY) {                    /* 键盘:轮询输入设备(WASD 转向) */
+            unsigned k = *IN_DATA & 0xFF;
+            if (k == 'a') dx = -1;
+            else if (k == 'd') dx = 1;
+            else if (k == 'w') dy = -1;
+            else if (k == 's') dy = 1;
+            uart_putc((char)k);                /* 回显到串口:证明键盘真的进来了 */
+        }
+        {
+            unsigned v = kern_recv();
+            draw_sprite(FB, x, y, 1);          /* 擦旧 */
+            if (x == 0) dx = 1;
+            if (x == 56) dx = -1;
+            if (y == 0) dy = 1;
+            if (y == 26) dy = -1;
+            x += dx;
+            y += dy;
+            if (x < 0) x = 0;                  /* 手动转向可能越界,夹回来 */
+            if (x > 56) x = 56;
+            if (y < 0) y = 0;
+            if (y > 26) y = 26;
+            draw_sprite(FB, x, y, 0);          /* 画新 */
+            uart_putc('<');
+            uart_putdec(v);
+            uart_putc('>');
+        }
     }
 }
 
