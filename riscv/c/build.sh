@@ -5,8 +5,10 @@ set -e
 cd "$(dirname "$0")"
 ZIG=/home/dazi9/computer-lab/tools/zig/zig
 NAME="${1:?用法: build.sh <hello|sum>}"
+SRCS="start.S $NAME.c"
+[ -f "$NAME.S" ] && SRCS="$SRCS $NAME.S"      # 内核类程序带配套 trap 汇编
 "$ZIG" cc -target riscv32-freestanding -mcpu=generic_rv32 -Os \
     -ffreestanding -nostdlib -fno-stack-protector \
-    -Wl,-T,link.ld -o "$NAME.elf" start.S "$NAME.c"
+    -Wl,-T,link.ld -o "$NAME.elf" $SRCS
 "$ZIG" objcopy -O binary "$NAME.elf" "$NAME.bin"
 echo "OK c/$NAME.bin($(stat -c%s "$NAME.bin") 字节)"
