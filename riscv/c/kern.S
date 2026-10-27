@@ -38,6 +38,8 @@ trap_entry:
     sw x29, 112(sp)
     sw x30, 116(sp)
     sw x31, 120(sp)
+    csrrs t0, 0x340, x0          # 真实任务 sp 被换到了 mscratch
+    sw t0, 4(sp)                 # 补写 x2 槽位(上面存的是换入的 ctx 指针)
     csrrs t0, 0x341, x0          # mepc
     sw t0, 124(sp)
     csrrs t0, 0x342, x0          # mcause

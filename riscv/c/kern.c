@@ -48,10 +48,29 @@ static void rearm(void)
     MTIMECMP_HI = (unsigned)(t >> 32);
 }
 
+static void uart_putdec(unsigned v)
+{
+    char buf[11];
+    int i = 0;
+    if (v == 0) {
+        uart_putc('0');
+        return;
+    }
+    while (v) {
+        buf[i++] = (char)('0' + v % 10);
+        v /= 10;
+    }
+    while (i)
+        uart_putc(buf[--i]);
+}
+
 static void task_a(void)
 {
+    unsigned tick = 0;
     for (;;) {
-        uart_putc('A');
+        uart_putc('[');
+        uart_putdec(tick++);
+        uart_putc(']');
         for (volatile int d = 0; d < 1500; d++)
             ;
     }
