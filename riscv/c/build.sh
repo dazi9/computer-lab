@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# 用法: bash build.sh <hello|sum>
+# 用 zig cc 把 start.S + <name>.c 交叉编译成 RV32I 裸机镜像
+set -e
+cd "$(dirname "$0")"
+ZIG=/home/dazi9/computer-lab/tools/zig/zig
+NAME="${1:?用法: build.sh <hello|sum>}"
+"$ZIG" cc -target riscv32-freestanding -mcpu=generic_rv32 -Os \
+    -ffreestanding -nostdlib -fno-stack-protector \
+    -Wl,-T,link.ld -o "$NAME.elf" start.S "$NAME.c"
+"$ZIG" objcopy -O binary "$NAME.elf" "$NAME.bin"
+echo "OK c/$NAME.bin($(stat -c%s "$NAME.bin") 字节)"
