@@ -9,6 +9,30 @@
 → framebuffer 显卡 → CLINT 定时器 + trap → 抢占式内核(睡眠/idle/邮箱 IPC)
 ```
 
+## 快速开始
+
+克隆到任意目录即可——脚本按自身位置定位,不依赖绝对路径:
+
+```bash
+git clone https://github.com/dazi9/computer-lab.git
+cd computer-lab
+
+python3 chip8/tests/test_cpu.py      # CHIP-8:15/15
+python3 riscv/tests/test_rv.py       # RV32I:21/21
+bash chip8/play.sh                   # 在真实终端里玩弹跳小球
+```
+
+只有交叉编译 C 程序需要 zig(下载约 60MB,解压约 300MB,不入库):
+
+```bash
+python3 tools/fetch_zig.py           # 下载 zig 到 tools/zig
+bash riscv/c/build.sh kern           # 重新编译内核
+```
+
+下载支持断点续传,中断后重跑会接着下;国内网络可设 `ZIG_MIRROR` 指向镜像。
+Windows 用户请在 WSL 里克隆后执行;`play.sh` / `watch.sh` 需要真实 TTY,
+不要在管道或重定向里跑。已有 zig 时可用 `ZIG=/path/to/zig` 覆盖工具链路径。
+
 ## 项目一览
 
 ### `chip8/` —— CHIP-8 虚拟机(热身项目)
@@ -16,10 +40,10 @@
 1977 年的虚拟机:4KB 内存、16 寄存器、35 条指令、64x32 单色屏。纯标准库。
 
 ```bash
-wsl -- bash ~/computer-lab/chip8/play.sh                    # 弹跳小球(自动)
-wsl -- bash ~/computer-lab/chip8/play.sh roms/paddle.ch8    # 挡板:'1'/'4' 控制
-cd ~/computer-lab/chip8 && python3 tests/test_cpu.py        # 15/15
-python3 tests/smoke.py                                      # 无头冒烟
+bash chip8/play.sh                       # 弹跳小球(自动)
+bash chip8/play.sh roms/paddle.ch8       # 挡板:'1'/'4' 控制
+python3 chip8/tests/test_cpu.py          # 15/15
+python3 chip8/tests/smoke.py             # 无头冒烟
 ```
 
 ### `riscv/` —— RISC-V 全家桶(主线)
@@ -29,13 +53,13 @@ python3 tests/smoke.py                                      # 无头冒烟
 键盘交互)。git 里程碑化管理。详见 `riscv/README.md`。
 
 ```bash
-cd ~/computer-lab/riscv
+cd riscv
 python3 -m rv.emu programs/hello.asm        # 汇编器 + 自研 CPU:Hello, RISC-V!
 python3 -m rv.emu c/hello.bin               # zig cc 编译的 C 跑在自己 CPU 上
 python3 -m rv.emu c/bounce.bin --fb-every 60000   # C 图形任务(快照看球)
 python3 -m rv.emu c/kern.bin --max-steps 2000000  # 多任务内核(UART 时序流)
 bash watch.sh                               # 实况围观内核,方向键/WASD 操纵小球
-python3 tests/test_rv.py                    # 19/19
+python3 tests/test_rv.py                    # 21/21
 python3 tests/kern_smoke.py                 # 内核冒烟(调度/邮箱/键盘链路断言)
 bash c/build.sh hello                       # 重新交叉编译任一 C 程序
 ```
@@ -44,7 +68,7 @@ bash c/build.sh hello                       # 重新交叉编译任一 C 程序
 
 | 文件 | 用途 |
 |---|---|
-| `fetch_zig.py` | 自动下载安装 zig 0.17 到 `tools/zig`(urllib,零 apt) |
+| `fetch_zig.py` | 下载 zig 0.17.0 到 `tools/zig`(urllib,零 apt;自动识别平台) |
 | `elf_sections.py` | 解析 ELF32 节表(定位过 .eh_frame 孤儿节问题) |
 | `zig_cpus.py` | 列 zig 支持的 CPU/特性(注意:0.17 的 `-mcpu=X+f` 需验证) |
 
@@ -91,3 +115,7 @@ git 仓库按真实开发时间线组织(15 个提交,01:16 → 07:00)。说明:
 零 GPU/CUDA(全程纯 CPU 指令解释);零驱动安装、零重启、零杀进程;
 Python 依赖只用标准库(venv 预留未动);apt 一次没用过;token 全程节约
 (单机单进程串行推进,未动用并行 agent)。
+
+## 许可
+
+MIT,见 [LICENSE](LICENSE)。

@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: CHIP-8 单元测试
+        run: python3 chip8/tests/test_cpu.py
+      - name: RISC-V 单元测试
+        run: python3 riscv/tests/test_rv.py
+
+  toolchain:
+    name: 交叉编译链路(下载 zig + 编内核)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: 从仓库任意位置安装 zig
+        run: python3 tools/fetch_zig.py
+      - name: 编译并跑内核冒烟
+        run: |
+          bash riscv/c/build.sh kern
+          cd riscv && python3 tests/kern_smoke.py
