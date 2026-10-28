@@ -10,18 +10,18 @@
     chip8/asm.py     极简汇编器(两遍扫描,标签/DB/注释),附弹跳小球源码
     tests/           15 组指令级单元测试 + 无头冒烟测试
     roms/            ROM 与脚本(make_roms.py 自产 bounce/paddle;fetch_roms.sh
-                     可抓公开测试 ROM——本机 WSL 访问 GitHub 超时,暂未下载成功)
+                     可抓公开测试 ROM,全部失败也不影响本地自制 ROM)
 
-## 玩(在你自己的 WSL 终端里,不要走管道)
+## 玩(真实终端,不要走管道;在仓库根目录执行)
 
-    wsl -- bash ~/computer-lab/chip8/play.sh                        # 弹跳小球(自动演示)
-    wsl -- bash ~/computer-lab/chip8/play.sh roms/paddle.ch8        # 挡板:终端键 '1' 左移、'4' 右移
+    bash chip8/play.sh                        # 弹跳小球(自动演示)
+    bash chip8/play.sh roms/paddle.ch8        # 挡板:终端键 '1' 左移、'4' 右移
 
 键位:`1234 / qwer / asdf / zxcv` → CHIP-8 的 `123C / 456D / 789E / A0BF`,ESC 退出。
 
 ## 验证(无头,随处可跑)
 
-    cd ~/computer-lab/chip8
+    cd chip8
     python3 tests/test_cpu.py                       # 15 组单元测试
     python3 tests/smoke.py                          # 120 帧冒烟:球必须真的在动
     python3 -m chip8.emu roms/bounce.ch8 --headless 60 --dump-every 30

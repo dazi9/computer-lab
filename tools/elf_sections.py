@@ -1,4 +1,5 @@
 """解析 ELF32 节表:看 0x80000000 到底放了什么(诊断孤儿节排序问题)。"""
+import os
 import struct
 
 
@@ -27,5 +28,7 @@ def dump(path):
 
 if __name__ == '__main__':
     import sys
-    for p in (sys.argv[1:] or ['/home/dazi9/computer-lab/riscv/c/kern.elf']):
+    here = os.path.dirname(os.path.abspath(__file__))
+    default = os.path.join(os.path.dirname(here), 'riscv', 'c', 'kern.elf')
+    for p in (sys.argv[1:] or [default]):
         dump(p)

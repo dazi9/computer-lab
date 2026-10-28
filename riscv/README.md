@@ -7,7 +7,7 @@
 
 - [x] **阶段 1**:RV32I 核心 —— 40 条基础指令 + ecall/ebreak/fence + MMIO UART/输入
 - [x] **阶段 2(提前完成)**:RV32I 汇编器 —— 伪指令 li/la/mv/not/neg/nop/j/call/ret,数据段 .string/.byte/.word/.space
-- [x] **阶段 3**:C 跑在自己 CPU 上 —— zig 0.17.0(装在 ~/computer-lab/tools/zig),
+- [x] **阶段 3**:C 跑在自己 CPU 上 —— zig 0.17.0(装在 `tools/zig`),
       `zig cc -target riscv32-freestanding -mcpu=generic_rv32` 交叉编译,start.S 统一入口,
       hello.c 与 sum.c(含栈/数组/函数调用,自检退出码)全部通过
 - [x] **阶段 3b**:framebuffer MMIO(0x10001000,64x32 位图,256 字节,MSB=行内最左)
@@ -72,7 +72,7 @@ RAM 从 0x80000000 开始,程序入口即 0x80000000,小端。
 
 ## 命令
 
-    cd ~/computer-lab/riscv
+    cd riscv
     python3 -m rv.emu programs/hello.asm       # Hello, RISC-V!
     python3 -m rv.emu c/kern.bin --max-steps 2000000   # 多任务内核 UART 时序流
     bash watch.sh                              # 实况围观内核(真实终端,ESC 退出)
@@ -90,11 +90,11 @@ RAM 从 0x80000000 开始,程序入口即 0x80000000,小端。
 
 ## C 工具链(阶段 3)
 
-    cd ~/computer-lab/riscv
+    cd riscv
     bash c/build.sh hello && python3 -m rv.emu c/hello.bin
     bash c/build.sh sum   && python3 -m rv.emu c/sum.bin
 
-- zig 0.17.0 装在 `~/computer-lab/tools/zig`(fetch_zig.py 自动下载,零 apt)
+- zig 0.17.0 装在 `tools/zig`(fetch_zig.py 自动下载,零 apt;需联网)
 - 关键旗标:`-target riscv32-freestanding -mcpu=generic_rv32`(纯 RV32I,**必须砍掉
   默认的 C 压缩扩展**,否则 16 位指令会被当 4 字节读) + `-Os`(关掉 Debug 的 UBSan)
 - C 侧约定:`_start` 在 start.S(先 `li sp, 0x80400000` 立栈,再 `call cmain`,
