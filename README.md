@@ -77,6 +77,15 @@ bash c/build.sh hello                       # 重新交叉编译任一 C 程序
 - trap 保存循环里 `csrrw sp,mscratch,sp` 交换后 x2 已是 ctx 指针,
   真实 sp 要从 mscratch 补写回——否则任务栈形同虚设
 
+## 版本管理
+
+git 仓库按真实开发时间线组织(15 个提交,01:16 → 07:00)。说明:
+- 内核演进为**真实中间版本**:kern.c v1(A/B 忙等)→ v2(睡眠队列)→
+  v3(单槽邮箱)→ v4(环形缓冲)→ v5(微操作系统),kern.S 含带
+  sp 交换 bug 的初版与修复版,`git log -p riscv/c/kern.c` 可看完整进化史
+- 其余文件在归属阶段以终态快照入库(rv 下文件含后续增强,已注明)
+- `tools/zig/`(约 300MB 工具链)不入库,`fetch_zig.py` 一键重建
+
 ## 约束合规
 
 零 GPU/CUDA(全程纯 CPU 指令解释);零驱动安装、零重启、零杀进程;
