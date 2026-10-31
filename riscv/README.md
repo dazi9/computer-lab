@@ -48,6 +48,9 @@
       MMIO,内核任务轮询 `0x10000004/08` 读取,回显到串口并用 WASD 操纵小球方向;
       冒烟测试注入 wasd 并断言四个键全部经 MMIO 回显——终端→模拟器→MMIO→
       内核任务→framebuffer 的完整交互链路闭环
+- [x] **实况渲染窗口自适应**:每帧探测终端尺寸,≥64x18 半块 1x、≥128x34 切 2x
+      (每像素 2 字符宽)居中重排,拖动窗口即时生效,太小只显示提示不花屏;
+      每行绝对定位排版,不依赖换行符(raw 模式 OPOST 关闭,单靠换行会画成楼梯)
 - [x] **微操作系统(v5):M/U 两级特权 + ecall 系统调用表**:CPU 增加 mode 跟踪与
       mstatus.MPP 进出栈;U 模式下 CSR/wfi/mret → trap(mcause=2),ecall → 系统调用
       trap(mcause=8)。系统调用表:halt/putc/putdec/sleep/send/recv/gettime;阻塞式
@@ -79,6 +82,7 @@ RAM 从 0x80000000 开始,程序入口即 0x80000000,小端。
     python3 -m rv.emu programs/hello.asm --trace   # 逐步看 PC 和指令字
     python3 -m rv.asm programs/hello.asm -o programs/hello.bin
     python3 tests/test_rv.py                   # 单元测试
+    python3 tests/test_display.py              # 显示层:帧形/缩放/居中
 
 ## 布局
 

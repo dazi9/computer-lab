@@ -6,6 +6,7 @@
 程序通过 MMIO(写 0x10000000)往"串口"打字,ecall 停机。
 """
 import argparse
+import shutil
 import sys
 
 from .asm import assemble
@@ -25,7 +26,62 @@ def half_block(fb):
             top, bot = px(r, c), px(r + 1, c)
             row.append('█' if top and bot else '▀' if top else '▄' if bot else ' ')
         lines.append(''.join(row))
-    return '\n'.join(lines)
+    return lines
+
+
+def wide_frame(fb):
+    """2x 模式:每像素占 2 字符宽、1 行高,给够大的窗口。"""
+    def px(r, c):
+        return fb[r * 8 + (c >> 3)] & (0x80 >> (c & 7))
+    return [''.join('██' if px(r, c) else '  ' for c in range(64))
+            for r in range(32)]
+
+
+def dwidth(s):
+    """一行在终端里的显示宽度:CJK 全角按 2,其余按 1。"""
+    return sum(2 if ord(c) >= 0x2E80 else 1 for c in s)
+
+
+def clip(s, n):
+    """按显示宽度截断一行,防止折行毁掉整个画面。"""
+    out, used = [], 0
+    for ch in s:
+        used += 2 if ord(ch) >= 0x2E80 else 1
+        if used > n:
+            break
+        out.append(ch)
+    return ''.join(out)
+
+
+def fit(cols, rows, extra):
+    """按窗口选缩放:2 = 每像素 2x1 字符,1 = 半块字符(2 像素挤 1 行),0 = 装不下。"""
+    if cols >= 128 and rows >= 32 + extra:
+        return 2
+    if cols >= 64 and rows >= 16 + extra:
+        return 1
+    return 0
+
+
+def paint(cols, rows, screen, foot, view, foot_style='\x1b[2m'):
+    """把 screen(屏幕行)+ foot(说明行)居中重画,返回 (转义串, 本帧视图)。
+
+    每行绝对定位 + 清到行尾,全程不依赖换行符:raw 模式下 OPOST 关着,
+    单独的换行只下移不回车,靠它排版会在行宽非整屏时画成楼梯。
+    视图(窗口尺寸/行数)与上帧不同才整屏清一次,其余帧原地覆盖不闪。"""
+    items = screen + list(foot)
+    width = max(map(dwidth, items)) if items else 1
+    top = max((rows - len(items)) // 2, 0)
+    left = max((cols - width) // 2, 0)
+    buf = []
+    if view != (cols, rows, len(screen)):
+        buf.append('\x1b[2J')
+    for i, line in enumerate(screen):
+        buf.append('\x1b[%d;%dH\x1b[K%s' % (top + 1 + i, left + 1, line))
+    for i, line in enumerate(foot):
+        buf.append('\x1b[%d;%dH\x1b[K%s%s\x1b[0m'
+                   % (top + 1 + len(screen) + i, left + 1, foot_style,
+                      clip(line, cols - left)))
+    return ''.join(buf), (cols, rows, len(screen))
 
 
 def run_live(cpu, spf, fps=30):
@@ -38,6 +94,7 @@ def run_live(cpu, spf, fps=30):
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     sys.stdout.write('\x1b[?1049h\x1b[?25l')
+    view = None
     try:
         tty.setraw(fd)
         frame_time = 1.0 / fps
@@ -71,8 +128,20 @@ def run_live(cpu, spf, fps=30):
             tail = ''.join(ch if 32 <= ord(ch) < 127 else '·' for ch in tail)
             stat = ('CYC %d | MTIME %d | %d 步/帧 | +/- 调速  ESC 退出'
                     % (cpu.cycles, cpu.mtime, spf[0]))
-            sys.stdout.write('\x1b[H' + half_block(cpu.fb) + '\n' + tail
-                             + '\n' + stat + '\x1b[J')
+            size = shutil.get_terminal_size()   # 每帧问一次,窗口拖动即刻生效
+            foot = [tail, stat]
+            s = fit(size.columns, size.lines, len(foot))
+            if s == 2:
+                text, view = paint(size.columns, size.lines, wide_frame(cpu.fb),
+                                   foot, view)
+            elif s == 1:
+                text, view = paint(size.columns, size.lines, half_block(cpu.fb),
+                                   foot, view)
+            else:
+                text, view = paint(size.columns, size.lines, [], [
+                    '窗口太小(%dx%d):至少 64x18,2x 缩放要 128x34'
+                    % (size.columns, size.lines)], view, '\x1b[1;31m')
+            sys.stdout.write(text)
             sys.stdout.flush()
             rest = frame_time - (time.monotonic() - t0)
             if rest > 0:
