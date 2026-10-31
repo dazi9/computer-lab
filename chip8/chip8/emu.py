@@ -6,13 +6,12 @@
     python3 -m chip8.emu roms/bounce.ch8
 """
 import argparse
-import select
+import shutil
 import sys
-import termios
-import time
-import tty
 
 from .cpu import Chip8, H, W
+
+# 交互渲染用的行内导入放在 run_interactive 里,避免无头环境加载 termios 失败
 
 # 终端四排键 → CHIP-8 十六进制小键盘
 KEYMAP = {
@@ -41,7 +40,60 @@ def half_block_frame(cpu):
             bot = cpu.display[(r + 1) * W + c_]
             row.append('█' if top and bot else '▀' if top else '▄' if bot else ' ')
         lines.append(''.join(row))
-    return '\n'.join(lines)
+    return lines
+
+
+def wide_frame(cpu):
+    """2x 模式:每像素占 2 字符宽、1 行高,给够大的窗口。"""
+    return [''.join('██' if p else '  ' for p in cpu.display[r * W:(r + 1) * W])
+            for r in range(H)]
+
+
+def dwidth(s):
+    """一行在终端里的显示宽度:CJK 全角按 2,其余按 1。"""
+    return sum(2 if ord(c) >= 0x2E80 else 1 for c in s)
+
+
+def clip(s, n):
+    """按显示宽度截断一行,防止折行毁掉整个画面。"""
+    out, used = [], 0
+    for ch in s:
+        used += 2 if ord(ch) >= 0x2E80 else 1
+        if used > n:
+            break
+        out.append(ch)
+    return ''.join(out)
+
+
+def fit(cols, rows, extra):
+    """按窗口选缩放:2 = 每像素 2x1 字符,1 = 半块字符(2 像素挤 1 行),0 = 装不下。"""
+    if cols >= W * 2 and rows >= H + extra:
+        return 2
+    if cols >= W and rows >= H // 2 + extra:
+        return 1
+    return 0
+
+
+def paint(cols, rows, screen, foot, view, foot_style='\x1b[2m'):
+    """把 screen(屏幕行)+ foot(说明行)居中重画,返回 (转义串, 本帧视图)。
+
+    每行绝对定位 + 清到行尾,全程不依赖换行符:raw 模式下 OPOST 关着,
+    单独的换行只下移不回车,靠它排版会在行宽非整屏时画成楼梯。
+    视图(窗口尺寸/行数)与上帧不同才整屏清一次,其余帧原地覆盖不闪。"""
+    items = screen + list(foot)
+    width = max(map(dwidth, items)) if items else 1
+    top = max((rows - len(items)) // 2, 0)
+    left = max((cols - width) // 2, 0)
+    buf = []
+    if view != (cols, rows, len(screen)):
+        buf.append('\x1b[2J')
+    for i, line in enumerate(screen):
+        buf.append('\x1b[%d;%dH\x1b[K%s' % (top + 1 + i, left + 1, line))
+    for i, line in enumerate(foot):
+        buf.append('\x1b[%d;%dH\x1b[K%s%s\x1b[0m'
+                   % (top + 1 + len(screen) + i, left + 1, foot_style,
+                      clip(line, cols - left)))
+    return ''.join(buf), (cols, rows, len(screen))
 
 
 def run_frames(cpu, frames, ips=8):
@@ -57,11 +109,18 @@ def run_frames(cpu, frames, ips=8):
 
 def run_interactive(cpu, ips=8, fps=60, key_ms=150):
     """终端交互主循环。终端没有 keyup 事件,按键 150ms 后自动松开。"""
+    import select
+    import termios
+    import time
+    import tty
+
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
-    hint = 'CHIP-8 | ESC 退出 | 键位: 1234/qwer/asdf/zxcv → 123C/456D/789E/A0BF'
+    foot = ['CHIP-8 | ESC 退出',
+            '键位: 1234/qwer/asdf/zxcv → 123C/456D/789E/A0BF']
     sys.stdout.write('\x1b[?1049h\x1b[?25l')
     keys_down = {}
+    view = None
     try:
         tty.setraw(fd)
         frame_time = 1.0 / fps
@@ -85,7 +144,19 @@ def run_interactive(cpu, ips=8, fps=60, key_ms=150):
             cpu.tick()
             if cpu.st:
                 sys.stdout.write('\a')
-            sys.stdout.write('\x1b[H' + half_block_frame(cpu) + '\n' + hint + '\x1b[J')
+            size = shutil.get_terminal_size()   # 每帧问一次,窗口拖动即刻生效
+            s = fit(size.columns, size.lines, len(foot))
+            if s == 2:
+                text, view = paint(size.columns, size.lines, wide_frame(cpu),
+                                   foot, view)
+            elif s == 1:
+                text, view = paint(size.columns, size.lines, half_block_frame(cpu),
+                                   foot, view)
+            else:
+                text, view = paint(size.columns, size.lines, [], [
+                    '窗口太小(%dx%d):至少 64x18,2x 缩放要 128x34'
+                    % (size.columns, size.lines)], view, '\x1b[1;31m')
+            sys.stdout.write(text)
             sys.stdout.flush()
             rest = frame_time - (time.monotonic() - t0)
             if rest > 0:

@@ -19,8 +19,12 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: CHIP-8 单元测试
         run: python3 chip8/tests/test_cpu.py
+      - name: CHIP-8 显示层测试
+        run: python3 chip8/tests/test_display.py
       - name: RISC-V 单元测试
         run: python3 riscv/tests/test_rv.py
+      - name: RISC-V 显示层测试
+        run: python3 riscv/tests/test_display.py
 
   toolchain:
     name: 交叉编译链路(下载 zig + 编内核)

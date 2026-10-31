@@ -18,17 +18,21 @@
     bash chip8/play.sh roms/paddle.ch8        # 挡板:终端键 '1' 左移、'4' 右移
 
 键位:`1234 / qwer / asdf / zxcv` → CHIP-8 的 `123C / 456D / 789E / A0BF`,ESC 退出。
+窗口自适应:每帧探测终端尺寸,≥64x18 按 1x(半块字符)居中,≥128x34 自动切
+2x(每像素 2 字符宽),拖动窗口即时重排;太小只显示提示,不花屏。
 
 ## 验证(无头,随处可跑)
 
     cd chip8
     python3 tests/test_cpu.py                       # 15 组单元测试
+    python3 tests/test_display.py                   # 显示层:缩放/居中/截断
     python3 tests/smoke.py                          # 120 帧冒烟:球必须真的在动
     python3 -m chip8.emu roms/bounce.ch8 --headless 60 --dump-every 30
 
 ## 实现说明
 
-- 显示走终端 ANSI(半块字符 `▀▄█`,64x32 像素压成 16 行文本),零图形栈
+- 显示走终端 ANSI(半块字符 `▀▄█`,64x32 像素压成 16 行文本),零图形栈;
+  每行绝对定位排版,不依赖换行符(raw 模式下 OPOST 关着,单靠换行会画成楼梯)
 - 声音是终端蜂鸣 `\a`(ST > 0 时每帧响一声),零音频栈
 - 终端没有 keyup 事件,按键 150ms 后自动松开(玩 most games 够用)
 - 兼容性开关:`Chip8(shift_legacy=True)` 老机型移位取 Vy 作源;
