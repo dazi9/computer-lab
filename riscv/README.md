@@ -77,8 +77,8 @@ RAM 从 0x80000000 开始,程序入口即 0x80000000,小端。
 
     cd riscv
     python3 -m rv.emu programs/hello.asm       # Hello, RISC-V!
-    python3 -m rv.emu c/kern.bin --max-steps 2000000   # 多任务内核 UART 时序流
-    bash watch.sh                              # 实况围观内核(真实终端,ESC 退出)
+    bash c/build.sh kern && python3 -m rv.emu c/kern.bin --max-steps 2000000   # 内核(*.bin 不入库,先编译)
+    bash watch.sh                              # 实况围观内核(真实终端,ESC 退出;需先 build kern)
     python3 -m rv.emu programs/hello.asm --trace   # 逐步看 PC 和指令字
     python3 -m rv.asm programs/hello.asm -o programs/hello.bin
     python3 tests/test_rv.py                   # 单元测试
