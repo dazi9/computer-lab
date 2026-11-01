@@ -55,10 +55,10 @@ python3 chip8/tests/smoke.py             # 无头冒烟
 ```bash
 cd riscv
 python3 -m rv.emu programs/hello.asm        # 汇编器 + 自研 CPU:Hello, RISC-V!
-python3 -m rv.emu c/hello.bin               # zig cc 编译的 C 跑在自己 CPU 上
-python3 -m rv.emu c/bounce.bin --fb-every 60000   # C 图形任务(快照看球)
-python3 -m rv.emu c/kern.bin --max-steps 2000000  # 多任务内核(UART 时序流)
-bash watch.sh                               # 实况围观内核,方向键/WASD 操纵小球
+bash c/build.sh hello && python3 -m rv.emu c/hello.bin      # zig cc 编译的 C(*.bin 不入库,先编译)
+bash c/build.sh bounce && python3 -m rv.emu c/bounce.bin --fb-every 60000   # C 图形任务(快照看球)
+bash c/build.sh kern && python3 -m rv.emu c/kern.bin --max-steps 2000000    # 多任务内核(UART 时序流)
+bash watch.sh                               # 实况围观内核,方向键/WASD 操纵小球(需先 build kern)
 python3 tests/test_rv.py                    # 21/21
 python3 tests/kern_smoke.py                 # 内核冒烟(调度/邮箱/键盘链路断言)
 bash c/build.sh hello                       # 重新交叉编译任一 C 程序
