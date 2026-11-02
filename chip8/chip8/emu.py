@@ -4,8 +4,11 @@
     python3 -m chip8.emu roms/bounce.ch8 --headless 60 --dump-every 20
 交互模式(在真实终端里跑,ESC 退出):
     python3 -m chip8.emu roms/bounce.ch8
+原子级显微镜(反汇编/寄存器/内存/单步/断点,真实终端):
+    python3 -m chip8.emu roms/bounce.ch8 --scope
 """
 import argparse
+import re
 import shutil
 import sys
 
@@ -49,19 +52,34 @@ def wide_frame(cpu):
             for r in range(H)]
 
 
+ANSI_RE = re.compile('\x1b\\[[0-9;]*[A-Za-z]')
+
+
+def strip_ansi(s):
+    """剥掉 SGR 颜色序列,量宽度/截断时才能数对人眼看到的字符。"""
+    return ANSI_RE.sub('', s)
+
+
 def dwidth(s):
-    """一行在终端里的显示宽度:CJK 全角按 2,其余按 1。"""
-    return sum(2 if ord(c) >= 0x2E80 else 1 for c in s)
+    """一行在终端里的显示宽度:CJK 全角按 2,其余按 1(颜色序列不算)。"""
+    return sum(2 if ord(c) >= 0x2E80 else 1 for c in strip_ansi(s))
 
 
 def clip(s, n):
-    """按显示宽度截断一行,防止折行毁掉整个画面。"""
-    out, used = [], 0
-    for ch in s:
+    """按显示宽度截断一行,防止折行毁掉整个画面;颜色序列原样保留。"""
+    out, used, i = [], 0, 0
+    while i < len(s):
+        m = ANSI_RE.match(s, i)
+        if m:                                # 转义序列不占宽度,整段照抄
+            out.append(m.group())
+            i = m.end()
+            continue
+        ch = s[i]
         used += 2 if ord(ch) >= 0x2E80 else 1
         if used > n:
             break
         out.append(ch)
+        i += 1
     return ''.join(out)
 
 
@@ -109,6 +127,7 @@ def run_frames(cpu, frames, ips=8):
 
 def run_interactive(cpu, ips=8, fps=60, key_ms=150):
     """终端交互主循环。终端没有 keyup 事件,按键 150ms 后自动松开。"""
+    import os
     import select
     import termios
     import time
@@ -121,13 +140,19 @@ def run_interactive(cpu, ips=8, fps=60, key_ms=150):
     sys.stdout.write('\x1b[?1049h\x1b[?25l')
     keys_down = {}
     view = None
+    pending = ''
     try:
         tty.setraw(fd)
         frame_time = 1.0 / fps
         while True:
             t0 = time.monotonic()
-            while select.select([sys.stdin], [], [], 0)[0]:
-                ch = sys.stdin.read(1)
+            # os.read 整块吃掉 OS 缓冲再逐字符分发:select 看的是文件描述符,
+            # sys.stdin.read(1) 走 Python 缓冲层,突发按键(如粘贴)会卡在
+            # 缓冲里不再"可读",select 从此再也看不见它们
+            while select.select([fd], [], [], 0)[0]:
+                pending += os.read(fd, 4096).decode('utf-8', 'replace')
+            while pending:
+                ch, pending = pending[0], pending[1:]
                 if ch in ('\x1b', '\x03'):        # ESC / Ctrl-C
                     return
                 k = KEYMAP.get(ch.lower())
@@ -174,6 +199,8 @@ def main(argv=None):
     ap.add_argument('--fps', type=int, default=60)
     ap.add_argument('--headless', type=int, metavar='N', help='无头跑 N 帧后退出并打印快照')
     ap.add_argument('--dump-every', type=int, default=20, help='无头模式每几帧打印一次快照')
+    ap.add_argument('--scope', action='store_true',
+                    help='原子级显微镜:反汇编/寄存器/内存/单步/断点(需真实终端)')
     a = ap.parse_args(argv)
 
     cpu = Chip8()
@@ -185,6 +212,15 @@ def main(argv=None):
         for idx, snap in enumerate(snaps):
             if idx % a.dump_every == 0:
                 print('===== 第 %d 帧 | 累计 %d 条指令 =====' % (idx, (idx + 1) * a.ips))
+                print(snap)
+    elif a.scope and sys.stdin.isatty():
+        from .scope import run_scope
+        run_scope(cpu, a.ips, a.fps)
+    elif a.scope:
+        print('(--scope 需要真实终端,这里退回无头模式)')
+        for idx, snap in enumerate(run_frames(cpu, 120, a.ips)):
+            if idx % 30 == 0:
+                print('===== 第 %d 帧 =====' % idx)
                 print(snap)
     else:
         run_interactive(cpu, a.ips, a.fps)

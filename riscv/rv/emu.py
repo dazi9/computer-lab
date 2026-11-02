@@ -2,10 +2,12 @@
 
     python3 -m rv.emu programs/hello.asm
     python3 -m rv.emu programs/hello.bin --trace --max-steps 50000
+    python3 -m rv.emu c/kern.bin --scope    # 原子级显微镜:单步/断点/位分解
 
 程序通过 MMIO(写 0x10000000)往"串口"打字,ecall 停机。
 """
 import argparse
+import re
 import shutil
 import sys
 
@@ -37,19 +39,34 @@ def wide_frame(fb):
             for r in range(32)]
 
 
+ANSI_RE = re.compile('\x1b\\[[0-9;]*[A-Za-z]')
+
+
+def strip_ansi(s):
+    """剥掉 SGR 颜色序列,量宽度/截断时才能数对人眼看到的字符。"""
+    return ANSI_RE.sub('', s)
+
+
 def dwidth(s):
-    """一行在终端里的显示宽度:CJK 全角按 2,其余按 1。"""
-    return sum(2 if ord(c) >= 0x2E80 else 1 for c in s)
+    """一行在终端里的显示宽度:CJK 全角按 2,其余按 1(颜色序列不算)。"""
+    return sum(2 if ord(c) >= 0x2E80 else 1 for c in strip_ansi(s))
 
 
 def clip(s, n):
-    """按显示宽度截断一行,防止折行毁掉整个画面。"""
-    out, used = [], 0
-    for ch in s:
+    """按显示宽度截断一行,防止折行毁掉整个画面;颜色序列原样保留。"""
+    out, used, i = [], 0, 0
+    while i < len(s):
+        m = ANSI_RE.match(s, i)
+        if m:                                # 转义序列不占宽度,整段照抄
+            out.append(m.group())
+            i = m.end()
+            continue
+        ch = s[i]
         used += 2 if ord(ch) >= 0x2E80 else 1
         if used > n:
             break
         out.append(ch)
+        i += 1
     return ''.join(out)
 
 
@@ -86,6 +103,7 @@ def paint(cols, rows, screen, foot, view, foot_style='\x1b[2m'):
 
 def run_live(cpu, spf, fps=30):
     """终端实况模式:FB 渲染 + UART 尾巴 + 统计。ESC 退出,+/- 调速。"""
+    import os
     import select
     import termios
     import time
@@ -95,25 +113,35 @@ def run_live(cpu, spf, fps=30):
     old = termios.tcgetattr(fd)
     sys.stdout.write('\x1b[?1049h\x1b[?25l')
     view = None
+    pending = ''
     try:
         tty.setraw(fd)
         frame_time = 1.0 / fps
         while not cpu.halted:
             t0 = time.monotonic()
-            while select.select([sys.stdin], [], [], 0)[0]:
-                ch = sys.stdin.read(1)
+            # os.read 整块吃掉 OS 缓冲再逐字符分发:select 看的是文件描述符,
+            # sys.stdin.read(1) 走 Python 缓冲层,突发按键(如粘贴)会卡在
+            # 缓冲里不再"可读",select 从此再也看不见它们
+            while select.select([fd], [], [], 0)[0]:
+                pending += os.read(fd, 4096).decode('utf-8', 'replace')
+            while pending:
+                ch, pending = pending[0], pending[1:]
                 if ch in ('\x1b', '\x03'):                 # ESC 或方向键序列
-                    if select.select([sys.stdin], [], [], 0.01)[0]:
-                        follow = sys.stdin.read(1)
-                        if follow == '[':                  # ESC [ X = 方向键
-                            arrow = sys.stdin.read(1)
+                    if ch == '\x03':
+                        return
+                    if not pending and select.select([fd], [], [], 0.01)[0]:
+                        pending += os.read(fd, 4096).decode('utf-8', 'replace')
+                    if pending.startswith('['):            # ESC [ X = 方向键
+                        if len(pending) < 2:               # 读块把序列切开了:再等 10ms
+                            if select.select([fd], [], [], 0.01)[0]:
+                                pending += os.read(fd, 4096).decode('utf-8', 'replace')
+                        if len(pending) >= 2:
+                            arrow, pending = pending[1], pending[2:]
                             m = {'A': 'w', 'B': 's', 'C': 'd', 'D': 'a'}
                             if arrow in m:
                                 cpu.input.append(m[arrow])
                             continue
-                    return                                     # 真 ESC:退出
-                if ch == '\x03':
-                    return
+                    return                                 # 真 ESC:退出
                 if ch == '+':
                     spf[0] = min(spf[0] * 2, 200000)
                 elif ch == '-':
@@ -163,6 +191,8 @@ def main(argv=None):
                     help='终端实况:实时渲染 framebuffer + UART 流(需真实终端)')
     ap.add_argument('--spf', type=int, default=4000, metavar='N',
                     help='实况模式每帧步数(默认 4000,+/- 运行中调速)')
+    ap.add_argument('--scope', action='store_true',
+                    help='原子级显微镜:反汇编/寄存器/CSR/位分解/单步/断点(需真实终端)')
     a = ap.parse_args(argv)
 
     cpu = RV32()
@@ -174,6 +204,20 @@ def main(argv=None):
             cpu.load(fh.read())
 
     try:
+        if a.scope and sys.stdin.isatty():
+            from .scope import run_scope
+            run_scope(cpu, [a.spf])
+            out = ''.join(cpu.uart_out)
+            if out:
+                print(out[-2000:])
+            if cpu.halted:
+                print('[停机: 执行 %d 条指令, 退出码 %d]'
+                      % (cpu.cycles, cpu.exit_code))
+            else:
+                print('[显微镜退出: 共 %d 条指令]' % cpu.cycles)
+            return
+        if a.scope:
+            print('(--scope 需要真实终端,这里退回无头模式)')
         if a.live and sys.stdin.isatty():
             spf = [a.spf]
             run_live(cpu, spf)

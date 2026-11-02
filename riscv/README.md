@@ -79,16 +79,35 @@ RAM 从 0x80000000 开始,程序入口即 0x80000000,小端。
     python3 -m rv.emu programs/hello.asm       # Hello, RISC-V!
     bash c/build.sh kern && python3 -m rv.emu c/kern.bin --max-steps 2000000   # 内核(*.bin 不入库,先编译)
     bash watch.sh                              # 实况围观内核(真实终端,ESC 退出;需先 build kern)
+    bash scope.sh                              # 原子级显微镜:单步/断点/位分解(需先 build kern)
     python3 -m rv.emu programs/hello.asm --trace   # 逐步看 PC 和指令字
     python3 -m rv.asm programs/hello.asm -o programs/hello.bin
     python3 tests/test_rv.py                   # 单元测试
     python3 tests/test_display.py              # 显示层:帧形/缩放/居中
+    python3 tests/test_scope.py                # 显微镜:反汇编/位分解/面板
+
+## 原子级显微镜(--scope)
+
+    bash scope.sh                              # 默认 c/kern.bin(需先 build kern)
+    python3 -m rv.emu programs/hello.asm --scope
+
+把 CPU 拆开看的调试器:反汇编窗口(基于 decode() 的字段,ABI 寄存器名,
+→ 标当前 PC,● 标断点)+ **32 位指令逐位分解**(按 R/I/S/B/U/J 格式分组
+标注每个字段)+ x0-x31 双列 + CSR/特权面板(mstatus/mepc/mcause/mode 徽标)
++ framebuffer + 内存 hexdump(跟随 sp/pc/mepc,标注 RAM/FB 区域)。
+**变化过的寄存器、CSR 与内存字节染黄**——trap 进出的瞬间、任务栈的呼吸、
+mtime 的快进,全部逐格可见。
+
+键位:空格 暂停/继续(默认暂停,可从头单步)、n 单步一条、j/k 移动反汇编
+光标、b 在光标处切换断点、g 切换 hexdump 跟随(sp→pc→mepc)、+/- 调速、
+ESC 退出。最小窗口 110x35。
 
 ## 布局
 
     rv/cpu.py       核心:decode() 是指令字段的唯一真相,step() 按 opcode 分发
     rv/asm.py       两遍扫描汇编器;li/la 恒展开为 lui+addi(尺寸可预测)
     rv/emu.py       运行器 CLI(.asm/.bin 通吃)
+    rv/scope.py     原子级显微镜:反汇编/位分解/寄存器/CSR/单步/断点
     programs/       hello / count 汇编源
     tests/          编码基准(手算规范编码)+ 行为断言 + 端到端
 

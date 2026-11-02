@@ -7,8 +7,9 @@
 
     chip8/cpu.py     虚拟机核心:取指-译码-执行,35 条指令 + 60Hz 定时器
     chip8/emu.py     运行器:无头批处理模式 + 终端交互模式(ANSI 渲染)
+    chip8/scope.py   原子级显微镜:反汇编/寄存器/内存 hexdump/单步/断点
     chip8/asm.py     极简汇编器(两遍扫描,标签/DB/注释),附弹跳小球源码
-    tests/           15 组指令级单元测试 + 无头冒烟测试
+    tests/           15 组指令级单元测试 + 显示层/显微镜测试 + 无头冒烟
     roms/            ROM 与脚本(make_roms.py 自产 bounce/paddle;fetch_roms.sh
                      可抓公开测试 ROM,全部失败也不影响本地自制 ROM)
 
@@ -21,11 +22,26 @@
 窗口自适应:每帧探测终端尺寸,≥64x18 按 1x(半块字符)居中,≥128x34 自动切
 2x(每像素 2 字符宽),拖动窗口即时重排;太小只显示提示,不花屏。
 
+## 显微镜(--scope,真实终端)
+
+    bash chip8/scope.sh                        # 默认 bounce
+    bash chip8/scope.sh roms/paddle.ch8
+
+把虚拟机拆开看的调试器:反汇编窗口(→ 标当前 PC,● 标断点)+ V0-VF/PC/I/
+DT/ST 寄存器列 + 16 位 nibble 逐位分解(hi/x/y/n)+ 64x32 屏 + 内存 hexdump
+(跟随 I)。**变化过的寄存器与内存字节染黄,I 指向的字节染青**——球每动
+一像素,是哪条 DRW 写的、写了哪个字节,全都看得见。
+
+键位:空格 暂停/继续(默认暂停,可从头单步)、n 单步一条、j/k 移动反汇编
+光标、b 在光标处切换断点、g 切换 hexdump 跟随(I↔PC)、+/- 调速、ESC 退出;
+游戏键 1234/qwer/asdf/zxcv 照常可用。最小窗口 92x30。
+
 ## 验证(无头,随处可跑)
 
     cd chip8
     python3 tests/test_cpu.py                       # 15 组单元测试
     python3 tests/test_display.py                   # 显示层:缩放/居中/截断
+    python3 tests/test_scope.py                     # 显微镜:反汇编/位分解/面板
     python3 tests/smoke.py                          # 120 帧冒烟:球必须真的在动
     python3 -m chip8.emu roms/bounce.ch8 --headless 60 --dump-every 30
 
