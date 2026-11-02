@@ -42,6 +42,7 @@ Windows 用户请在 WSL 里克隆后执行;`play.sh` / `watch.sh` 需要真实 
 ```bash
 bash chip8/play.sh                       # 弹跳小球(自动)
 bash chip8/play.sh roms/paddle.ch8       # 挡板:'1'/'4' 控制
+bash chip8/scope.sh                      # 显微镜:暂停/单步/断点,逐位拆解每条指令
 python3 chip8/tests/test_cpu.py          # 15/15
 python3 chip8/tests/smoke.py             # 无头冒烟
 ```
@@ -59,6 +60,7 @@ bash c/build.sh hello && python3 -m rv.emu c/hello.bin      # zig cc 编译的 C
 bash c/build.sh bounce && python3 -m rv.emu c/bounce.bin --fb-every 60000   # C 图形任务(快照看球)
 bash c/build.sh kern && python3 -m rv.emu c/kern.bin --max-steps 2000000    # 多任务内核(UART 时序流)
 bash watch.sh                               # 实况围观内核,方向键/WASD 操纵小球(需先 build kern)
+bash scope.sh                               # 显微镜:寄存器/CSR/指令位分解/单步/断点(需先 build kern)
 python3 tests/test_rv.py                    # 21/21
 python3 tests/kern_smoke.py                 # 内核冒烟(调度/邮箱/键盘链路断言)
 bash c/build.sh hello                       # 重新交叉编译任一 C 程序
