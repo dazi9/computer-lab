@@ -1,9 +1,96 @@
-# RISC-V 全家桶 —— 阶段 1:RV32I 核心(纯 CPU 软件仿真)
+# RISC-V 全家桶 —— 自研 CPU 到微操作系统(纯 CPU 软件仿真)
 
-自己的 RV32I CPU + 自己的汇编器 + 第一个跑在自己 CPU 上的程序。
-零第三方依赖(纯 Python 标准库)、零 GPU、零 apt,所有文件在本目录。
+用大白话说:这个目录里是一台用纯 Python"造"出来的 RISC-V 计算机。
+RISC-V 是真实存在的开放指令集架构(现代 CPU 说的"语言"),这里从零写了
+它的 CPU,配上自研汇编器,用 zig 把 C 编译给它跑,再装上"显卡"
+(framebuffer)、时钟(CLINT)和键盘,最后长出了一个**带 M/U 两级特权与
+系统调用表的微操作系统**。零第三方依赖(纯 Python 标准库)、零 GPU、
+零 apt,所有文件在本目录。
 
-## 进度
+## 新手怎么玩(三条命令,真实终端)
+
+    cd riscv
+    python3 -m rv.emu programs/hello.asm     # ① 第一个程序:自研汇编器 + 自研 CPU,打出 Hello, RISC-V!
+    bash c/build.sh kern                     # ② 编译"迷你操作系统"(编译产物不入库,首次要编;需先装 zig,见下)
+    bash watch.sh                            # ③ 实况围观:两个任务轮流跑,方向键/WASD 操纵小球,ESC 退出
+
+想看"计算机里面"?`bash scope.sh` 打开显微镜(空格暂停、n 单步、b 断点),
+详见下面"原子级显微镜"。窗口至少 110x35(列x行),太小会显示提示。
+
+zig 编译器装在 `tools/zig`(主目录 `python3 tools/fetch_zig.py` 一键下载,
+约 60MB;已有 zig 可用 `ZIG=/path/to/zig` 覆盖)。
+
+## 命令速查
+
+    cd riscv
+    python3 -m rv.emu programs/hello.asm       # Hello, RISC-V!(汇编器现场汇编,自研 CPU 执行)
+    bash c/build.sh kern && python3 -m rv.emu c/kern.bin --max-steps 2000000   # 内核(*.bin 不入库,先编译)
+    bash watch.sh                              # 实况围观内核(真实终端,ESC 退出;需先 build kern)
+    bash scope.sh                              # 原子级显微镜:单步/断点/位分解(需先 build kern)
+    python3 -m rv.emu programs/hello.asm --trace   # 逐步看 PC 和指令字
+    python3 -m rv.asm programs/hello.asm -o programs/hello.bin
+    python3 tests/test_rv.py                   # 单元测试
+    python3 tests/test_display.py              # 显示层:帧形/缩放/居中
+    python3 tests/test_scope.py                # 显微镜:反汇编/位分解/面板
+
+## 原子级显微镜(--scope)
+
+    bash scope.sh                              # 默认 c/kern.bin(需先 build kern)
+    python3 -m rv.emu programs/hello.asm --scope
+
+把 CPU 拆开看的调试器:反汇编窗口(基于 decode() 的字段,ABI 寄存器名,
+→ 标当前 PC,● 标断点)+ **32 位指令逐位分解**(按 R/I/S/B/U/J 格式分组
+标注每个字段)+ x0-x31 双列 + CSR/特权面板(mstatus/mepc/mcause/mode 徽标)
++ framebuffer + 内存 hexdump(跟随 sp/pc/mepc,标注 RAM/FB 区域)。
+**变化过的寄存器、CSR 与内存字节染黄**——trap 进出的瞬间、任务栈的呼吸、
+mtime 的快进,全部逐格可见。
+
+键位:空格 暂停/继续(默认暂停,可从头单步)、n 单步一条、j/k 移动反汇编
+光标、b 在光标处切换断点、g 切换 hexdump 跟随(sp→pc→mepc)、+/- 调速、
+ESC 退出。最小窗口 110x35。
+
+## 布局
+
+    rv/cpu.py       核心:decode() 是指令字段的唯一真相,step() 按 opcode 分发
+    rv/asm.py       两遍扫描汇编器;li/la 恒展开为 lui+addi(尺寸可预测)
+    rv/emu.py       运行器 CLI(.asm/.bin 通吃)
+    rv/scope.py     原子级显微镜:反汇编/位分解/寄存器/CSR/单步/断点
+    programs/       hello / count 汇编源
+    tests/          编码基准(手算规范编码)+ 行为断言 + 端到端
+
+## C 工具链(阶段 3)
+
+    cd riscv
+    bash c/build.sh hello && python3 -m rv.emu c/hello.bin
+    bash c/build.sh sum   && python3 -m rv.emu c/sum.bin
+
+- zig 0.17.0 装在 `tools/zig`(fetch_zig.py 自动下载,零 apt;需联网)
+- 关键旗标:`-target riscv32-freestanding -mcpu=generic_rv32`(纯 RV32I,**必须砍掉
+  默认的 C 压缩扩展**,否则 16 位指令会被当 4 字节读) + `-Os`(关掉 Debug 的 UBSan)
+- C 侧约定:`_start` 在 start.S(先 `li sp, 0x80400000` 立栈,再 `call cmain`,
+  返回值经 a0 变成 ecall 退出码);C 只写 `int cmain(void)`
+- link.ld 把 .text.start 固定在 0x80000000,flat binary 经 objcopy 生成
+
+## MMIO 约定(与 QEMU virt 板对齐,方便将来接真工具链)
+
+    0x10000000 + 0    写:UART 发送一个字节(收集在 cpu.uart_out)
+    0x10000000 + 4    读:1 = 有输入可读,0 = 无
+    0x10000000 + 8    读:弹出一个输入字符,空则 0xFFFFFFFF
+    0x10001000~+FF    framebuffer:64x32 位图,每行 8 字节,MSB = 行内最左像素
+    ecall             停机,退出码 = a0(x10)
+
+RAM 从 0x80000000 开始,程序入口即 0x80000000,小端。
+
+## 实现要点
+
+- 六种指令格式 R/I/S/B/U/J 的立即数位序是重灾区:B 型把 imm[4:1|11] 拆进
+  [11:8|7],J 型把 imm[10:1|11|19:12] 拆进 [30:21|20|19:12] —— 所以测试里
+  放了手算的规范编码做基准,并做了"编码 → 译码"往返断言
+- li/la 恒定展开成 lui+addi 两条(%hi/%lo 做 +0x800 舍入),尺寸可预测,
+  两遍扫描才不会被前向引用的常量尺寸坑到
+- 允许非对齐访存(按字节读写实现,天然支持);PC 必须对齐,否则报错
+
+## 开发里程碑(流水账,新手可跳过)
 
 - [x] **阶段 1**:RV32I 核心 —— 40 条基础指令 + ecall/ebreak/fence + MMIO UART/输入
 - [x] **阶段 2(提前完成)**:RV32I 汇编器 —— 伪指令 li/la/mv/not/neg/nop/j/call/ret,数据段 .string/.byte/.word/.space
@@ -60,75 +147,6 @@
 - [x] **调度语义修正**:syscall 不是抢占点(只有定时器中断或任务自阻塞才切换)——
       否则每个 ecall 都轮转任务,字符级乱插队;以及重构回归:定时器路径漏调
       wake_due_tasks 导致 idle 永不唤醒(冒烟 + ELF 符号定位抓出)
+- [x] **原子级显微镜**:两个模拟器各一个 --scope 调试器(反汇编/位分解/寄存器/
+      CSR/单步/断点/变化染色),交互按键改 os.read 整块读修复粘贴吞键
 - [ ] 收尾候选:中断嵌套、优先级调度、PMP 内存隔离、FORTH on metal、CHIP-8 套娃
-- [ ] 待办:CPU 尚无 M 扩展(乘除法)——C 程序里出现 `*`/`/` 时需要补 M 或避免使用
-
-## MMIO 约定(与 QEMU virt 板对齐,方便将来接真工具链)
-
-    0x10000000 + 0    写:UART 发送一个字节(收集在 cpu.uart_out)
-    0x10000000 + 4    读:1 = 有输入可读,0 = 无
-    0x10000000 + 8    读:弹出一个输入字符,空则 0xFFFFFFFF
-    0x10001000~+FF    framebuffer:64x32 位图,每行 8 字节,MSB = 行内最左像素
-    ecall             停机,退出码 = a0(x10)
-
-RAM 从 0x80000000 开始,程序入口即 0x80000000,小端。
-
-## 命令
-
-    cd riscv
-    python3 -m rv.emu programs/hello.asm       # Hello, RISC-V!
-    bash c/build.sh kern && python3 -m rv.emu c/kern.bin --max-steps 2000000   # 内核(*.bin 不入库,先编译)
-    bash watch.sh                              # 实况围观内核(真实终端,ESC 退出;需先 build kern)
-    bash scope.sh                              # 原子级显微镜:单步/断点/位分解(需先 build kern)
-    python3 -m rv.emu programs/hello.asm --trace   # 逐步看 PC 和指令字
-    python3 -m rv.asm programs/hello.asm -o programs/hello.bin
-    python3 tests/test_rv.py                   # 单元测试
-    python3 tests/test_display.py              # 显示层:帧形/缩放/居中
-    python3 tests/test_scope.py                # 显微镜:反汇编/位分解/面板
-
-## 原子级显微镜(--scope)
-
-    bash scope.sh                              # 默认 c/kern.bin(需先 build kern)
-    python3 -m rv.emu programs/hello.asm --scope
-
-把 CPU 拆开看的调试器:反汇编窗口(基于 decode() 的字段,ABI 寄存器名,
-→ 标当前 PC,● 标断点)+ **32 位指令逐位分解**(按 R/I/S/B/U/J 格式分组
-标注每个字段)+ x0-x31 双列 + CSR/特权面板(mstatus/mepc/mcause/mode 徽标)
-+ framebuffer + 内存 hexdump(跟随 sp/pc/mepc,标注 RAM/FB 区域)。
-**变化过的寄存器、CSR 与内存字节染黄**——trap 进出的瞬间、任务栈的呼吸、
-mtime 的快进,全部逐格可见。
-
-键位:空格 暂停/继续(默认暂停,可从头单步)、n 单步一条、j/k 移动反汇编
-光标、b 在光标处切换断点、g 切换 hexdump 跟随(sp→pc→mepc)、+/- 调速、
-ESC 退出。最小窗口 110x35。
-
-## 布局
-
-    rv/cpu.py       核心:decode() 是指令字段的唯一真相,step() 按 opcode 分发
-    rv/asm.py       两遍扫描汇编器;li/la 恒展开为 lui+addi(尺寸可预测)
-    rv/emu.py       运行器 CLI(.asm/.bin 通吃)
-    rv/scope.py     原子级显微镜:反汇编/位分解/寄存器/CSR/单步/断点
-    programs/       hello / count 汇编源
-    tests/          编码基准(手算规范编码)+ 行为断言 + 端到端
-
-## C 工具链(阶段 3)
-
-    cd riscv
-    bash c/build.sh hello && python3 -m rv.emu c/hello.bin
-    bash c/build.sh sum   && python3 -m rv.emu c/sum.bin
-
-- zig 0.17.0 装在 `tools/zig`(fetch_zig.py 自动下载,零 apt;需联网)
-- 关键旗标:`-target riscv32-freestanding -mcpu=generic_rv32`(纯 RV32I,**必须砍掉
-  默认的 C 压缩扩展**,否则 16 位指令会被当 4 字节读) + `-Os`(关掉 Debug 的 UBSan)
-- C 侧约定:`_start` 在 start.S(先 `li sp, 0x80400000` 立栈,再 `call cmain`,
-  返回值经 a0 变成 ecall 退出码);C 只写 `int cmain(void)`
-- link.ld 把 .text.start 固定在 0x80000000,flat binary 经 objcopy 生成
-
-## 实现要点
-
-- 六种指令格式 R/I/S/B/U/J 的立即数位序是重灾区:B 型把 imm[4:1|11] 拆进
-  [11:8|7],J 型把 imm[10:1|11|19:12] 拆进 [30:21|20|19:12] —— 所以测试里
-  放了手算的规范编码做基准,并做了"编码 → 译码"往返断言
-- li/la 恒定展开成 lui+addi 两条(%hi/%lo 做 +0x800 舍入),尺寸可预测,
-  两遍扫描才不会被前向引用的常量尺寸坑到
-- 允许非对齐访存(按字节读写实现,天然支持);PC 必须对齐,否则报错
