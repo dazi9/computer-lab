@@ -10,7 +10,8 @@
 ```bash
 cd ~/computer-lab/riscv
 bash c/build.sh bounce
-python3 -m rv.emu c/bounce.bin --fb-every 60000 | head -20
+python3 -m rv.emu c/bounce.bin --fb-every 60000 --max-steps 400000
+# 每隔几万条指令打印一张 ASCII 快照,程序自然跑完后看到 bounce done
 ```
 
 每隔几万条指令,你看到一张 ASCII 小地图里有一颗球在动。
